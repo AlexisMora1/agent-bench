@@ -166,10 +166,24 @@ class GraphEvaluator:
         # Asegurar que todas las claves tengan el mismo número de elementos
         num_rows = min(len(values) for values in self.results.values())
 
-        # Agregar filas con datos
-        for i in range(num_rows):
-            row_data = [str(self.results[key][i]) for key in columns]
-            table.add_row(*row_data)
+        if num_rows > 10:
+            # Mostrar las primeras 5 filas
+            for i in range(5):
+                row_data = [str(self.results[key][i]) for key in columns]
+                table.add_row(*row_data)
+
+            # Agregar una fila de separación (opcional, para claridad)
+            table.add_row(*["..."] * len(columns))
+
+            # Mostrar las últimas 5 filas
+            for i in range(num_rows - 5, num_rows):
+                row_data = [str(self.results[key][i]) for key in columns]
+                table.add_row(*row_data)
+        else:
+            # Agregar todas las filas si no son más de 10
+            for i in range(num_rows):
+                row_data = [str(self.results[key][i]) for key in columns]
+                table.add_row(*row_data)
 
         console.print(table)
         console.print("[bold white]Evaluation completed![/bold white] ✅🎉\n")
