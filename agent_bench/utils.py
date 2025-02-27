@@ -10,18 +10,18 @@ import matplotlib.pyplot as plt
 
 SECTION_NAME = "Configuration"
 
-def get_llm(model_id: str, chat_model: Literal["ChatBedrock", "ChatBedrockConverse"]) -> Callable:
+def get_llm(model_id: str, chat_model: Literal["ChatBedrock", "ChatBedrockConverse"], temperature: int = 0) -> Callable:
     if chat_model == "ChatBedrock":
         return ChatBedrock(
             model_id= model_id,
-            model_kwargs=dict(temperature=0),
+            model_kwargs=dict(temperature=temperature),
             region="us-east-1",
             max_tokens=500,
         )
     elif chat_model == "ChatBedrockConverse":
         return ChatBedrockConverse(
             model= model_id,
-            temperature=0,
+            temperature=temperature,
             max_tokens=500,
         )
 

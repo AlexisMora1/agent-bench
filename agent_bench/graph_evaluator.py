@@ -20,7 +20,7 @@ console = Console()
 class GraphEvaluator:
     """GraphEvaluator will allow you to build agents for evaluation from a dictionary of configurations, a dataset and a series of evaluators (by default ErrorProbability and ExecutionTime)."""
     
-    def __init__(self, configurations: Dict[str, Dict], start_node: str, evaluators: List[BaseEvaluator]):
+    def __init__(self, configurations: Dict[str, Dict], start_node: str, evaluators: List[BaseEvaluator], results_file: str = None):
         """
         Initializes the evaluator with multiple configurations.
 
@@ -33,7 +33,12 @@ class GraphEvaluator:
         self.start_node = start_node
         self.results = defaultdict(list)
         self.evaluators = evaluators
+        self.results_file = results_file
         self.relevant_output_keys = set(eval.state_key for eval in evaluators if hasattr(eval, "state_key"))
+
+        if results_file:
+            self.load_results(results_file)
+
         console.print(f"[bold green] GraphEvaluator initialized[/bold green] with {len(configurations)} configurations.")
 
     def build_graph(self, nodes: List[Callable], edges: List[Tuple], graph_state: Dict, eval_config: Dict):
@@ -101,10 +106,12 @@ class GraphEvaluator:
         Returns:
             Dict: The results of the evaluation.
         """
-        self.results = []
+
         console.print(f"\n[bold cyan] Evaluating {len(self.configurations)} configurations[/bold cyan] on dataset of size {len(dataset)}\n")
-        
-        with tqdm(total=len(dataset), desc="🔍 Evaluating dataset", unit="example") as pbar:
+
+        total_evaluation = len(dataset)*len(self.configurations)
+
+        with tqdm(total=total_evaluation, desc="🔍 Evaluating dataset", unit="example") as pbar:
             results = defaultdict(list)
             for config_name, config in self.configurations.items():
                 nodes = config["nodes"]
@@ -117,9 +124,8 @@ class GraphEvaluator:
                         futures = []
                         j=0
                         for i in range(0, len(dataset), batch_size):
-                            console.print(f"\n[bold cyan] Evaluating {j} batch examples [/bold cyan] on configuration {config_name}\n")
+                            console.print(f"\n[bold cyan] Evaluating {j} batch examples [/bold cyan] on configuration [bold cyan] {config_name} [/bold cyan]\n")
                             batch = dataset[i:i + batch_size]
-                            # El último lote puede ser más pequeño que batch_size
                             futures.extend(executor.submit(self.process_example, example, config_name, default_values) for example in batch)
                             j+=1
 
@@ -128,25 +134,46 @@ class GraphEvaluator:
                             for key, value in result.items():
                                 results[key].append(value)
                             pbar.update(1)
+                            console.clear()
                 
                 else:
                     i=0
                     for example in dataset:
-                        console.print(f"\n[bold cyan] Evaluating example {i} [/bold cyan] on configuration {config_name}\n")
+                        console.print(f"\n[bold cyan] Evaluating example {i} [/bold cyan] on configuration [bold cyan] {config_name} [/bold cyan]\n")
                         result = self.process_example(example, config_name, default_values)
                         for key, value in result.items():
                             results[key].append(value)
                         pbar.update(1)
+                        console.clear()
                         i+=1
 
-            self.results = results
+            for key, value in results.items():
+                self.results[key].extend(value)
 
         self._display_results()
+
+        if self.results_file:
+            self.save_experiment_as(self.results_file)
 
         if generate_report:
             self.generate_report()
 
         return self.results
+
+
+    def load_results(self, filename: str):
+        """
+        Loads previous results from a JSON file.
+
+        Args:
+            filename (str): The name of the file to load results from.
+        """
+        if os.path.exists(filename):
+            with open(filename, "r", encoding="utf-8") as f:
+                self.results = json.load(f)
+            console.print(f"[bold green]Loaded previous results from {filename}[/bold green]")
+        else:
+            console.print(f"[bold red]No previous results found in {filename}[/bold red]")
 
 
     def _display_results(self):
