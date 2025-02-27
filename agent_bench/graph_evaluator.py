@@ -8,6 +8,7 @@ from collections import defaultdict
 import time
 import os
 import json
+import json_tricks
 import csv
 from tqdm import tqdm
 from rich.console import Console
@@ -278,7 +279,7 @@ class GraphEvaluator:
 
         if file_ext == "json":
             with open(filename, "w", encoding=encoding) as f:
-                json.dump(self.results, f, ensure_ascii=False, indent=4)
+                json_tricks.dump(self.results, f, ensure_ascii=False, indent=4)
 
         elif file_ext == "csv":
             keys = self.results[0].keys()  # Obtiene las claves del primer diccionario
