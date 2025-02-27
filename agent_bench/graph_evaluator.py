@@ -14,6 +14,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.progress import Progress
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import uuid
 
 console = Console()
 
@@ -92,7 +93,7 @@ class GraphEvaluator:
         return chat_agent.compile()
 
 
-    def evaluate(self, dataset: List[Dict], graph_state_class, generate_report: bool = True, batch_size: int = None, default_values: Dict = {}):
+    def evaluate(self, dataset: List[Dict], graph_state_class, generate_report: bool = True, batch_size: int = None, default_values: Dict = {}, experiment_name: str = None):
         """
         Evaluates the graph with a dataset and evaluators.
 
@@ -106,6 +107,8 @@ class GraphEvaluator:
         Returns:
             Dict: The results of the evaluation.
         """
+        if experiment_name is None:
+            experiment_name = str(uuid.uuid4())
 
         console.print(f"\n[bold cyan] Evaluating {len(self.configurations)} configurations[/bold cyan] on dataset of size {len(dataset)}\n")
 
@@ -126,7 +129,7 @@ class GraphEvaluator:
                         for i in range(0, len(dataset), batch_size):
                             console.print(f"\n[bold cyan] Evaluating {j} batch examples [/bold cyan] on configuration [bold cyan] {config_name} [/bold cyan]\n")
                             batch = dataset[i:i + batch_size]
-                            futures.extend(executor.submit(self.process_example, example, config_name, default_values) for example in batch)
+                            futures.extend(executor.submit(self.process_example, example, config_name, default_values, experiment_name) for example in batch)
                             j+=1
 
                         for future in as_completed(futures):
@@ -140,7 +143,7 @@ class GraphEvaluator:
                     i=0
                     for example in dataset:
                         console.print(f"\n[bold cyan] Evaluating example {i} [/bold cyan] on configuration [bold cyan] {config_name} [/bold cyan]\n")
-                        result = self.process_example(example, config_name, default_values)
+                        result = self.process_example(example, config_name, default_values, experiment_name)
                         for key, value in result.items():
                             results[key].append(value)
                         pbar.update(1)
@@ -216,7 +219,7 @@ class GraphEvaluator:
         console.print("[bold white]Evaluation completed![/bold white] ✅🎉\n")
 
 
-    def process_example(self, example: Dict, config_name: str, default_values: Dict = {}):   
+    def process_example(self, example: Dict, config_name: str, default_values: Dict = {}, experiment_name: str = None):   
         """
         Processes a single example from the dataset.
 
@@ -247,7 +250,8 @@ class GraphEvaluator:
             "model_output": {k: model_output.get(k, None) for k in self.relevant_output_keys},
             "dataset_output": output_data,
             "execution_time": end_time - start_time,
-            "error": error
+            "error": error,
+            **({"experiment_id": experiment_name} if experiment_name is not None else {})
         }
 
         for eval in self.evaluators:
@@ -295,64 +299,68 @@ class GraphEvaluator:
         If no evaluators were provided it will plot only default evaluators, if you created a new evaluator be sure to add the custom_plot() method.
         """
         os.makedirs("./images", exist_ok=True)
-        generate_plots(self.results)
+        experiment_names = set(self.results.get("experiment_name", ["default"]))
 
         c = canvas.Canvas("./evaluation_report.pdf", pagesize=letter)
         _, height = letter
-        total_bar = len(self.evaluators) + 2  # Para la barra de progreso
+        total_bar = (len(self.evaluators) + 2)*len(experiment_names)  # Para la barra de progreso
 
         with Progress() as progress:
             task = progress.add_task("[cyan]📝 Generating report...", total=total_bar)
 
-            # Título del reporte
-            c.setFont("Helvetica-Bold", 14)
-            c.drawString(100, height - 50, "Reporte de Evaluación de Configuraciones")
+            for experiment in experiment_names:
+                filtered_results = {key: [value for i, value in enumerate(values) if self.results.get("experiment_name")[i] == experiment] for key, values in self.results.items()}
 
-            # Tamaño y posiciones para una cuadrícula 2x2
-            img_width, img_height = 280, 180
-            x1, x2 = 50, 320  # Columnas
-            y1, y2 = height - 250, height - 450  # Filas
+                # Título del reporte
+                c.setFont("Helvetica-Bold", 14)
+                c.drawString(100, height - 50, "Reporte de Evaluación de Configuraciones")
 
-            # Dibujar las 4 gráficas principales en la primera página
-            c.drawImage("./images/exec_time.png", x1, y1, width=img_width, height=img_height)
-            c.drawImage("./images/worst_case.png", x2, y1, width=img_width, height=img_height)
-            c.drawImage("./images/error_prob.png", x1, y2, width=img_width, height=img_height)
-            c.drawImage("./images/error_count.png", x2, y2, width=img_width, height=img_height)
+                # Tamaño y posiciones para una cuadrícula 2x2
+                img_width, img_height = 280, 180
+                x1, x2 = 50, 320  # Columnas
+                y1, y2 = height - 250, height - 450  # Filas
 
-            c.showPage()  # Nueva página para los evaluadores
-            progress.update(task, advance=2)
+                # Dibujar las 4 gráficas principales en la primera página
+                generate_plots(filtered_results)
+                c.drawImage("./images/exec_time.png", x1, y1, width=img_width, height=img_height)
+                c.drawImage("./images/worst_case.png", x2, y1, width=img_width, height=img_height)
+                c.drawImage("./images/error_prob.png", x1, y2, width=img_width, height=img_height)
+                c.drawImage("./images/error_count.png", x2, y2, width=img_width, height=img_height)
 
-            # Agregar gráficos personalizados organizados en cuadrícula
-            for evaluator in self.evaluators:
-                if hasattr(evaluator, "custom_plot"):
-                    evaluator_name = evaluator.__class__.__name__
-                    generated_files = evaluator.custom_plot(self.results, evaluator_name)
+                c.showPage()  # Nueva página para los evaluadores
+                progress.update(task, advance=2)
 
-                    # Título del evaluador en la nueva página
-                    c.setFont("Helvetica-Bold", 12)
-                    c.drawString(100, height - 50, f"Evaluación: {evaluator_name}")
+                # Agregar gráficos personalizados organizados en cuadrícula
+                for evaluator in self.evaluators:
+                    if hasattr(evaluator, "custom_plot"):
+                        evaluator_name = evaluator.__class__.__name__
+                        generated_files = evaluator.custom_plot(self.results, evaluator_name)
 
-                    x_positions = [50, 320]
-                    y_positions = [height - 250, height - 450, height - 630]
-                    img_idx = 0
+                        # Título del evaluador en la nueva página
+                        c.setFont("Helvetica-Bold", 12)
+                        c.drawString(100, height - 50, f"Evaluación: {evaluator_name}")
 
-                    for filename in generated_files:
-                        x = x_positions[img_idx % 2]
-                        y = y_positions[img_idx // 2]
+                        x_positions = [50, 320]
+                        y_positions = [height - 250, height - 450, height - 630]
+                        img_idx = 0
 
-                        c.drawImage(filename, x, y, width=img_width, height=img_height)
-                        img_idx += 1
+                        for filename in generated_files:
+                            x = x_positions[img_idx % 2]
+                            y = y_positions[img_idx // 2]
 
-                        # Cada 4 imágenes (2x2) pasamos a una nueva página
-                        if img_idx % 5 == 0:
-                            c.showPage()
-                            c.setFont("Helvetica-Bold", 12)
-                            c.drawString(100, height - 50, f"Evaluación: {evaluator_name} (cont.)")
-                            img_idx = 0
+                            c.drawImage(filename, x, y, width=img_width, height=img_height)
+                            img_idx += 1
 
-                    c.showPage()  # Nueva página después de cada evaluación
+                            # Cada 4 imágenes (2x2) pasamos a una nueva página
+                            if img_idx % 5 == 0:
+                                c.showPage()
+                                c.setFont("Helvetica-Bold", 12)
+                                c.drawString(100, height - 50, f"Evaluación: {evaluator_name} (cont.)")
+                                img_idx = 0
 
-                progress.update(task, advance=1)
+                        c.showPage()  # Nueva página después de cada evaluación
+
+                    progress.update(task, advance=1)
 
         c.save()
         console.print("[bold green]Report created successfully![/bold green] ✅🎉\n")
