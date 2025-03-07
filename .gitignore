@@ -9,3 +9,13 @@ venv.bak/
 __pycache__/
 *.py[cod]
 *$py.class
+images/
+*.png
+*.pdf
+*.html
+*.json
+*.csv
+*.jsonl
+*.jsonl.gz
+test_results/
+*.ipynb

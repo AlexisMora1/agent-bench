@@ -1,6 +1,6 @@
 from .base import BaseEvaluator
 from sentence_transformers import SentenceTransformer
-from typing import Dict, List
+from typing import Dict, List, Callable
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -17,7 +17,7 @@ class SimilarityEvaluator(BaseEvaluator):
     Evaluates the similarity between the model output and the true output using cosine similarity.
     """
 
-    def __init__(self, state_key, test="anova"):
+    def __init__(self, state_key, aggregation: Callable, **kwargs):
         """
         Initializes the SimilarityEvaluator with a state key and an optional test type.
 
@@ -25,9 +25,8 @@ class SimilarityEvaluator(BaseEvaluator):
             state_key (str): The key to extract the relevant state from the model output.
             test (str): The type of test to be used. Defaults to "anova".
         """
-        super().__init__(state_key)
+        super().__init__(state_key, aggregation, **kwargs)
         self.model = SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')
-        self.test=test
 
     def evaluate(self, model_output, output_data):
         """
@@ -45,39 +44,7 @@ class SimilarityEvaluator(BaseEvaluator):
         embeddings = self.model.encode([model_output, true_output]) # Obtener los embeddings
 
         return cosine_similarity(embeddings[0], embeddings[1])
-    
-    def custom_plot(self, dataset: Dict, file_name: str) -> List[str]:
-        """
-        Generates a bar plot of similarity scores for different configurations.
-
-        Args:
-            dataset (Dict): The dataset containing evaluation results.
-            file_name (str): The base name for the output plot file.
-
-        Returns:
-            List[str]: A list containing the file path of the generated plot.
-        """
-        configs = set(dataset.get("config"))
-        data_for_plot = []
-        for config in configs:
-            similarity = [dataset.get(self.__class__.__name__)[i] for i in range(len(dataset.get("config"))) if dataset.get("config")[i] == config]
-
-            mean_time = sum(similarity) / len(similarity)
-
-            data_for_plot.append(mean_time)
-        
-        configs = list(configs)
-        
-        plt.figure()
-        plt.bar(configs, data_for_plot, capsize=5)
-        plt.xlabel("Configuration")
-        plt.ylabel("Similarity score")
-        plt.title("Similarity score by Configuration")
-        file_name = f"./images/{file_name}.png"
-        plt.savefig(file_name)
-
-        return [file_name]
-    
+       
 class AccuracyEvaluator(BaseEvaluator):
     """
     Evaluates the accuracy of the model by comparing the model output with the true output.

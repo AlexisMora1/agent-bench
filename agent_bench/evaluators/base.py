@@ -1,11 +1,11 @@
-from typing import Dict
+from typing import Dict, Callable
 
 class BaseEvaluator:
     """This Base Evaluator class will help you build reusable evaluators with any network.
         Dont forget to add the evaluate and custom_plot methods if you want the evaluation to be plotted
     """
 
-    def __init__(self, state_key=None, test=None):
+    def __init__(self, state_key: str = None, aggregation: Callable = None, **kwargs):
         """
         Initializes the evaluator with an optional key to extract data from the state.
         
@@ -13,6 +13,8 @@ class BaseEvaluator:
             state_key (str): key to extract from the state. If None, the complete state is passed.
         """
         self.state_key = state_key
+        self.aggregation = aggregation   
+        self.default_plot = kwargs.get("default_plot", False)
 
     def extract_from_state(self, state: Dict):
         """

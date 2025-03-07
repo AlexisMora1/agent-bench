@@ -7,134 +7,132 @@ from collections import defaultdict
 import math
 import numpy as np
 import matplotlib.pyplot as plt
+from rich.console import Console
+from rich.table import Table
+from rich.progress import Progress
+from typing import Dict, List, Any, Tuple
+import time
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+import textwrap
+from agent_bench.evaluators import BaseEvaluator
+
 
 SECTION_NAME = "Configuration"
 
-def get_llm(model_id: str, chat_model: Literal["ChatBedrock", "ChatBedrockConverse"], temperature: int = 0) -> Callable:
-    if chat_model == "ChatBedrock":
-        return ChatBedrock(
-            model_id= model_id,
-            model_kwargs=dict(temperature=temperature),
-            region="us-east-1",
-            max_tokens=500,
-        )
-    elif chat_model == "ChatBedrockConverse":
-        return ChatBedrockConverse(
-            model= model_id,
-            temperature=temperature,
-            max_tokens=500,
-        )
-
-
-def prepare_data_for_anova(data: dict, key: str) -> dict:
+def truncate_cell_content(content: str, max_length: int = 100) -> str:
     """
-    Reorganiza los datos para una prueba ANOVA.
-
+    Trunca el contenido de una celda si excede el largo máximo.
+    
     Args:
-        data (dict): Diccionario con los datos.
-        key (str): Clave del valor a analizar en la prueba ANOVA.
-
-    Returns:
-        dict: Diccionario con listas de valores por configuración.
-    """
-    grouped_data = defaultdict(list)
-    
-    for config, value in zip(data["config"], data[key]):
-        grouped_data[config].append(value)
-    
-    return {key: list(grouped_data.values())}
-
-
-def prepare_data_for_mcnemar(data: dict, key: str) -> np.ndarray:
-    """
-    Reorganiza los datos en una matriz de contingencia para la prueba de McNemar.
-
-    Args:
-        data (dict): Diccionario con los datos.
-        key (str): Clave del valor binario a analizar.
-
-    Returns:
-        np.ndarray: Matriz de contingencia de tamaño (n x 2).
-    """
-    contingency_table = []
-    unique_configs = sorted(set(data["config"]))
-
-    for config in unique_configs:
-        values = [data[key][i] for i in range(len(data["config"])) if data["config"][i] == config]
-        count_1 = sum(1 for v in values if v == 1)
-        count_0 = sum(1 for v in values if v == 0)
-        contingency_table.append([count_0, count_1])  # Filas: configs, Columnas: [0s, 1s]
-
-    return np.array(contingency_table)
-
-
-def process_default_data(dataset: Dict):
-    """Procesa el dataset para obtener estadísticas clave por configuración."""
-    processed_data = {}
-    
-    configs = set(dataset.get("config"))
-    for config in configs:
-        times = [dataset.get("execution_time")[i] for i in range(len(dataset.get("config"))) if dataset.get("config")[i] == config]
-        errors = [dataset.get("error")[i] for i in range(len(dataset.get("config"))) if dataset.get("config")[i] == config]
+        content (str): Contenido de la celda
+        max_length (int): Longitud máxima permitida
         
-        mean_time = sum(times) / len(times)
-        std_dev = math.sqrt(sum((t - mean_time) ** 2 for t in times) / len(times))
-        worst_case = max(times)
-        error_prob = sum(errors) / len(errors)
-        error_count = sum(errors)
+    Returns:
+        str: Contenido truncado si excede max_length
+    """
+    if len(content) <= max_length:
+        return content
         
-        processed_data[config] = {
-            "exec_time": mean_time,
-            "exec_std": std_dev,
-            "worst_case": worst_case,
-            "error_prob": error_prob,
-            "error_count": error_count
-        }
-    
-    return processed_data
+    # Reservamos caracteres para "..."
+    segment_length = (max_length - 3) // 2
+    return f"{content[:segment_length]}...{content[-segment_length:]}"
 
 
-def generate_plots(output_dataset: Dict):
-    """Genera gráficos de tiempo de ejecución y errores."""
+def display_results(results: Dict, console: Console, max_cell_length: int = 100):
+    """ "
+    Displays the evaluation results in a table.
+    """
+    console.clear()
+    table = Table(title="Evaluation Results", style="white")
 
-    dataset = process_default_data(output_dataset)
+    # Mantener un orden consistente en las columnas
+    columns = sorted(results.keys())
 
-    configs = list(dataset.keys())
-    exec_times = [dataset[c]['exec_time'] for c in configs]
-    exec_stds = [dataset[c]['exec_std'] for c in configs]
-    worst_cases = [dataset[c]['worst_case'] for c in configs]
-    error_probs = [dataset[c]['error_prob'] for c in configs]
-    error_counts = [dataset[c]['error_count'] for c in configs]
-    
-    # Gráfico de tiempo de ejecución
-    plt.figure()
-    plt.bar(configs, exec_times, yerr=exec_stds, capsize=5)
-    plt.xlabel(SECTION_NAME)
-    plt.ylabel("Execution time (s)")
-    plt.title("Execution time by Configuration")
-    plt.savefig("./images/exec_time.png")
-    
-    # Gráfico de peores casos
-    plt.figure()
-    plt.bar(configs, worst_cases, color='red')
-    plt.xlabel(SECTION_NAME)
-    plt.ylabel("Worst Case (s)")
-    plt.title("Worst case by Configuration")
-    plt.savefig("./images/worst_case.png")
-    
-    # Gráfico de errores
-    plt.figure()
-    plt.bar(configs, error_probs)
-    plt.xlabel(SECTION_NAME)
-    plt.ylabel("Error probability")
-    plt.title("Error probability by Configuration")
-    plt.savefig("./images/error_prob.png")
-    
-    plt.figure()
-    plt.bar(configs, error_counts, color='gray')
-    plt.xlabel(SECTION_NAME)
-    plt.ylabel("Error Count")
-    plt.title("Error count by Configuration")
-    plt.savefig("./images/error_count.png")
+    # Agregar columnas a la tabla
+    for column in columns:
+        table.add_column(column, style="white")
+
+    # Asegurar que todas las claves tengan el mismo número de elementos
+    num_rows = min(len(values) for values in results.values())
+
+    if num_rows > 10:
+        # Mostrar las primeras 5 filas
+        for i in range(5):
+            row_data = [
+                truncate_cell_content(str(results[key][i]), max_cell_length) 
+                for key in columns
+            ]
+            table.add_row(*row_data)
+
+        # Agregar una fila de separación (opcional, para claridad)
+        table.add_row(*["..."] * len(columns))
+
+        # Mostrar las últimas 5 filas
+        for i in range(num_rows - 5, num_rows):
+            row_data = [
+                truncate_cell_content(str(results[key][i]), max_cell_length) 
+                for key in columns
+            ]
+            table.add_row(*row_data)
+    else:
+        # Agregar todas las filas si no son más de 10
+        for i in range(num_rows):
+            row_data = [
+                truncate_cell_content(str(results[key][i]), max_cell_length) 
+                for key in columns
+            ]
+            table.add_row(*row_data)
+
+    console.print(table)
+    console.print("[bold white]Evaluation completed![/bold white] ✅🎉\n")
 
 
+def add_page_header(page_title="", c: canvas.Canvas = None):
+    """Añade encabezado consistente a cada página"""
+    width, height = letter
+    c.setFont("Helvetica-Bold", 24)
+    c.drawString(50, height - 50, "Evaluation Report")
+    if page_title:
+        c.setFont("Helvetica", 16)
+        c.drawString(50, height - 80, page_title)
+    c.setFont("Helvetica", 10)
+    c.drawString(width - 150, height - 30, f"Generated: {time.strftime('%Y-%m-%d')}")
+    c.line(50, height - 90, width - 50, height - 90)
+
+
+def add_section_title(title, y_position, c: canvas.Canvas = None):
+    """Añade título de sección con formato consistente"""
+    width, _ = letter
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(50, y_position, title)
+    c.line(50, y_position - 5, width - 50, y_position - 5)
+    return y_position - 30
+
+
+def add_evaluator_descriptions(evaluators: List[BaseEvaluator], y_pos, c: canvas.Canvas = None):
+    _, height = letter
+    for evaluator in evaluators:
+        evaluator_name = evaluator.__class__.__name__
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(50, y_pos, evaluator_name)
+        y_pos -= 20
+        
+        c.setFont("Helvetica", 10)
+        doc_text = evaluator.__doc__ or "No description available"
+        # Wrap text para múltiples líneas
+        for line in doc_text.split('\n'):
+            wrapped_text = textwrap.fill(line, width=80)
+            for wrapped_line in wrapped_text.split('\n'):
+                c.drawString(70, y_pos, wrapped_line)
+                y_pos -= 15
+        
+        c.drawString(70, y_pos, f"State Key: {evaluator.state_key or 'None'}")
+        y_pos -= 15
+        c.drawString(70, y_pos, f"Default Plot: {'Yes' if evaluator.default_plot else 'No'}")
+        y_pos -= 30
+        
+        if y_pos < 100:  # Nueva página si no hay espacio
+            c.showPage()
+            add_page_header("Evaluators Description (cont.)")
+            y_pos = height - 150

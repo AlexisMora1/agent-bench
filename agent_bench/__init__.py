@@ -1,5 +1,4 @@
-from .graph_evaluator import GraphEvaluator
-from .utils import get_llm
+from .graph_evaluator import GraphEvaluator, EvaluationDataset
 from .evaluators import BaseEvaluator
 
-__all__ = ["GraphEvaluator", "get_llm", "BaseEvaluator"]
+__all__ = ["GraphEvaluator", "EvaluationDataset", "BaseEvaluator"]
