@@ -15,6 +15,8 @@ import time
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 import textwrap
+import psutil
+import os
 from agent_bench.evaluators import BaseEvaluator
 
 
@@ -136,3 +138,15 @@ def add_evaluator_descriptions(evaluators: List[BaseEvaluator], y_pos, c: canvas
             c.showPage()
             add_page_header("Evaluators Description (cont.)")
             y_pos = height - 150
+
+
+def measure_system_resources():
+    """Measure current system resources."""
+    process = psutil.Process(os.getpid())
+    _ = process.cpu_percent(interval=0.1)  # Primera llamada para evitar el 0%
+    
+    return {
+        "memory_usage_mb": process.memory_info().rss / 1024 / 1024,  # Convertir a MB
+        "cpu_percent": process.cpu_percent(interval=0.1),  # Segunda llamada con intervalo
+        "num_threads": process.num_threads()
+    }

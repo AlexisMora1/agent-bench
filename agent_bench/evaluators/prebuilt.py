@@ -1,6 +1,6 @@
-from .base import BaseEvaluator
+from .base import BaseEvaluator, BaseConversationalEvaluator
 from sentence_transformers import SentenceTransformer
-from typing import Dict, List, Callable
+from typing import Dict, List, Callable, Any
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -44,7 +44,8 @@ class SimilarityEvaluator(BaseEvaluator):
         embeddings = self.model.encode([model_output, true_output]) # Obtener los embeddings
 
         return cosine_similarity(embeddings[0], embeddings[1])
-       
+
+
 class AccuracyEvaluator(BaseEvaluator):
     """
     Evaluates the accuracy of the model by comparing the model output with the true output.
@@ -127,5 +128,4 @@ class AccuracyEvaluator(BaseEvaluator):
             file_name_list.append(file_name)
         
         return file_name_list
-
-    
+             

@@ -13,10 +13,12 @@ setup(
         "setuptools==75.8.2",
         "tqdm==4.67.1",
         "json-tricks==3.17.3",
+        'langgraph==0.2.75'
     ],
     extras_require={
         'prebuilt': [
             'sentence_transformers==3.4.1',
+            'langchain_aws==0.2.13',
         ],
         'aws': [
             'langchain_aws==0.2.13',

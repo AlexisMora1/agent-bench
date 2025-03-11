@@ -1,0 +1,47 @@
+name: Deploy MkDocs
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set Up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Cache Dependencies
+        uses: actions/cache@v4
+        with:
+          key: mkdocs-material-${{ github.run_id }}
+          path: .cache
+          restore-keys: |
+            mkdocs-material-
+
+      - name: Install MkDocs and Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install mkdocs-material
+
+      - name: Validate MkDocs Configuration
+        run: |
+          if [ ! -f mkdocs.yml ]; then 
+            echo "❌ ERROR: mkdocs.yml not found!"; 
+            exit 1; 
+          fi
+          mkdocs build --strict
+
+      - name: Deploy MkDocs to GitHub Pages
+        run: mkdocs gh-deploy --force
