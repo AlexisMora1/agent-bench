@@ -12,3 +12,7 @@ Agent Bench not only supports the dynamic creation of networks based on **config
 
 It is an ideal tool for edge case testing and data collection, which also allows you to generate a simple report with some default metrics, and even add **evaluators** that allow you to collect and display results for better analysis.
 
+## Project Status 🚨
+⚠️ **Limited Support**  
+This project is currently in developing mode, and only critical bug fixes will be addressed.  
+Currently Agent Bench only supports architectures built using **LangGraph**, and most of the pre-built functions assume that you use **LangChain** tools, although we tried to keep enough flexibility to allow you to use other types of solutions when invoking and managing your agents. 
