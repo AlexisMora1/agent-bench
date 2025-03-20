@@ -1,9 +1,26 @@
 from langgraph.graph import StateGraph, START, END
 from .evaluators.base import BaseEvaluator
-from .utils import display_results, add_page_header, add_evaluator_descriptions, measure_system_resources
+from .utils import (
+    display_results, 
+    add_page_header, 
+    add_evaluator_descriptions, 
+    measure_system_resources,
+    plot_paired_data,
+    plot_bar_data,
+    plot_violin
+)
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
-from typing import List, Dict, Tuple, Callable, Any
+import polars as pl
+from typing import (
+    List, 
+    Dict, 
+    Tuple, 
+    Callable, 
+    Any, 
+    Optional,
+    Literal
+)
 from collections import defaultdict
 import time
 import os
@@ -35,77 +52,60 @@ class EvaluationDataset:
         - A custom plot, in case they have the **custom_plot** method.
     """
 
-    def __init__(self, experiments_results: Dict, evaluators: List[BaseEvaluator] = None):
+    def __init__(self, experiments_results: Dict, evaluation_type: Literal["from_dataset", "from_conversation"] = "from_dataset", evaluators: List[BaseEvaluator] = None):
         self.raw_results = experiments_results
         self.evaluators = evaluators
         # Procesar datos solo una vez al inicializar
-        self.processed_data = self._process_data_efficiently()
+        self.evaluation_type = evaluation_type
         self.experiments = sorted(set(experiments_results["experiment_id"]))
         self.configs = sorted(set(experiments_results["config"]))
 
 
-    def _process_data_efficiently(self) -> Dict:
+    def calculate_metrics(self, evaluators, group_by: Optional[List[str]] = None) -> Tuple[Dict,Dict]:
         """
-        Proccess the metrics with evaluators with default_plot=True for plotting and metrics calculation
-        """
-        metrics = ["execution_time", "error", "memory_usage_mb", "cpu_percent", "num_threads"]
-        if self.evaluators:
-            metrics.extend(evaluator.__class__.__name__ for evaluator in self.evaluators)
-
-        processed = {metric: {} for metric in metrics}
+        Calculate metrics with flexible grouping.
         
-        # Crear índices para acceso rápido
-        for metric in metrics:
-            if metric not in self.raw_results:
-                continue
-                
-            for i, (exp_id, config, value) in enumerate(zip(
-                self.raw_results["experiment_id"],
-                self.raw_results["config"],
-                self.raw_results[metric]
-            )):
-                if exp_id not in processed[metric]:
-                    processed[metric][exp_id] = {}
-                if config not in processed[metric][exp_id]:
-                    processed[metric][exp_id][config] = []
-                    
-                processed[metric][exp_id][config].append(value)
-        
-        return processed
-
-
-    def calculate_metrics(self) -> Dict:
+        Args:
+            group_by: List of columns to group by. Default ['experiment_id', 'config']
         """
-        Use the aggregation function provided in the evaluator to calculate the metrics.
-
-        It wirks only in the metrics that are in the processed_data (those that were instantiated with default_plot=True)
-        """
+        if group_by is None:
+            group_by = ['experiment_id', 'config']
+            
         calculation_metric = {
-            "execution_time": np.mean,
-            "error": sum,
-            "memory_usage_mb":np.max, 
-            "cpu_percent":np.mean, 
-            "num_threads":np.median,
+            "execution_time": pl.mean,
+            "error": pl.sum,
+            "memory_usage_mb": pl.max,
+            "cpu_percent": pl.mean,
         }
-        if self.evaluators:
+        
+        if evaluators:
             calculation_metric.update({
                 evaluator.__class__.__name__: evaluator.aggregation 
-                for evaluator in self.evaluators
-                if evaluator.aggregation is not None  # Solo actualizar si hay función de agregación
+                for evaluator in evaluators
+                if evaluator.aggregation is not None
             })
 
-        results = {}
-        for metric, exp_data in self.processed_data.items():
-            results[metric] = {}
-            agg_func = calculation_metric.get(metric, np.mean)
-            
-            for config in self.configs:
-                results[metric][config] = [
-                    agg_func(exp_data.get(exp_id, {}).get(config, [0]))
-                    for exp_id in self.experiments
-                ]
+        # Convert to polars DataFrame
+        df = pl.DataFrame(self.raw_results)
+
+        grouped_in_list = None
+        result_list = {}
+
+        
+        grouped_in_list = (df
+                    .group_by(group_by)
+                    .agg(**{metric: pl.col(metric) for metric, _ in calculation_metric.items()})
+                    .sort(group_by))
+        result_list = {col: grouped_in_list[col].to_list() for col in grouped_in_list.columns}
+        
+        grouped_agg = (df
+                    .group_by(group_by)
+                    .agg(**{metric: agg(metric) for metric, agg in calculation_metric.items()})
+                    .sort(group_by))
+        
+        result_agg = {col: grouped_agg[col].to_list() for col in grouped_agg.columns}
                 
-        return results
+        return result_agg, result_list
 
 
     def plot_metrics(self):
@@ -114,57 +114,37 @@ class EvaluationDataset:
 
         If cuistom_plot() method was provided in the evaluator it is used instead of the default plot.
         """
-        x = np.arange(len(self.experiments))
-        width = 0.25
-        resulting_files = []
-
-        custom_cycler = (cycler(color=['c', 'm', 'y', 'k']) +
-                        cycler(lw=[1, 2, 3, 4]))
-
-        # Determinar qué métricas plotear
         metrics_to_plot = {
-            "default": ["execution_time", "error", "memory_usage_mb", "cpu_percent", "num_threads"],
+            "default": [],
             "custom": {}
         }
         
         if self.evaluators:
             for evaluator in self.evaluators:
                 if evaluator.default_plot:
-                    metrics_to_plot["default"].append(evaluator.__class__.__name__)
+                    metrics_to_plot["default"].append(evaluator)
                 elif hasattr(evaluator, "custom_plot"):
                     metrics_to_plot["custom"][evaluator.__class__.__name__] = evaluator
 
-        transformed_data = self.calculate_metrics()
+        agg_data, list_data = self.calculate_metrics(metrics_to_plot["default"], ["config"])
 
-        # Plotear métricas por defecto
-        for metric in metrics_to_plot["default"]:
-            if metric not in transformed_data:
-                continue
-                
-            _, ax = plt.subplots(figsize=(6, 5), layout='constrained')
-            
-            for i, config in enumerate(self.configs):
-                values = transformed_data[metric][config]
-                offset = width * i
-                rects = ax.bar(x + offset, values, width, 
-                              label=f"{metric} ({config})", capsize=5)
-                ax.bar_label(rects, padding=3, label_type='center', color='white')
-                ax.set_prop_cycle(custom_cycler)
-                
-            ax.set_ylabel("Value")
-            ax.set_title(f"{metric} by Experiment")
-            ax.set_xticks(x + width / 2, self.experiments)
-            ax.legend(loc='upper left')
-            
-            filename = f"./images/{metric}.png"
-            resulting_files.append(filename)
-            plt.savefig(filename)
-            plt.close()
+        resulting_files = []
+
+        configuration_names = list_data.pop("config")
+
+        resulting_files.extend([plot_violin(metric_name, data, configuration_names) for metric_name, data in list_data.items()])
+
+        if self.evaluation_type == "from_dataset":
+            resulting_files.extend([plot_paired_data(metric_name, data, configuration_names) for metric_name, data in list_data.items()])
+
+        configuration_names = agg_data.pop("config")
+        resulting_files.extend([plot_bar_data(metric_name, data, configuration_names) for metric_name, data in agg_data.items()])
+
 
         # Manejar plots personalizados
         for metric, evaluator in metrics_to_plot["custom"].items():
             resulting_files.extend(
-                evaluator.custom_plot(self.raw_results, "test")
+                evaluator.custom_plot(self.raw_results, metric)
             )
 
         return resulting_files
@@ -198,7 +178,7 @@ class EvaluationDataset:
                 f"Total Configurations: {len(self.configs)}",
                 f"Total Experiments: {len(self.experiments)}",
                 f"Evaluators Used: {len(self.evaluators) if self.evaluators else 0}",
-                "Default Metrics: execution_time, error"
+                "Default Metrics: execution_time, error, memory_usage, cpu_percent"
             ]
             
             for text in summary_text:
@@ -266,7 +246,7 @@ class EvaluationDataset:
         Raises:
             ValueError: If the file extension is not valid.
         """
-        if not self.experiments_results:
+        if not self.raw_results:
             raise ValueError("La lista de datos está vacía.")
 
         file_ext = filename.split(".")[-1].lower()
@@ -274,17 +254,17 @@ class EvaluationDataset:
         if file_ext == "json":
             with open(filename, "w", encoding=encoding) as f:
                 json_tricks.dump(
-                    self.experiments_results, f, ensure_ascii=False, indent=4
+                    self.raw_results, f, ensure_ascii=False, indent=4
                 )
 
         elif file_ext == "csv":
-            keys = self.experiments_results[
+            keys = self.raw_results[
                 0
             ].keys()  # Obtiene las claves del primer diccionario
             with open(filename, "w", newline="", encoding=encoding) as f:
                 writer = csv.DictWriter(f, fieldnames=keys)
                 writer.writeheader()
-                writer.writerows(self.experiments_results)
+                writer.writerows(self.raw_results)
 
         else:
             raise ValueError("Formato no soportado. Usa .json o .csv.")
@@ -494,11 +474,11 @@ class GraphEvaluator:
         self._display_results()
 
         return EvaluationDataset(
-            experiments_results=self.results, evaluators=self.evaluators
+            experiments_results=self.results, evaluation_type="from_dataset", evaluators=self.evaluators
         )
 
 
-    def evaluate_with_conversational_config(self, experiment_name: str, graph_state_class, agent_handler: Callable, agent_setup: List[Dict], batch_size: int = None):
+    def evaluate_with_conversational_config(self, experiment_name: str, graph_state_class, agent_handler: Callable, agent_setup: List[Dict], attempt_numbers: int = 4, batch_size: int = None):
         """Use this method to evaluate architectures iteratively (conversationally).
 
         It will only works if the evaluators are of type BaseConversationalEvaluator and have the evaluate_conversation method implemented."""
@@ -525,7 +505,7 @@ class GraphEvaluator:
                 if batch_size:
                     with ThreadPoolExecutor() as executor:
                         futures = []
-                        for i in range(0, len(agent_setup), batch_size):
+                        for i in range(0, attempt_numbers, batch_size):
                             batch = agent_setup[i : i + batch_size]
                             futures.extend(
                                 executor.submit(self.process_setup, setup, agent_handler, config_name, experiment_name) for setup in batch
@@ -551,7 +531,7 @@ class GraphEvaluator:
         self._display_results()
 
         return EvaluationDataset(
-            experiments_results=self.results, evaluators=self.evaluators
+            experiments_results=self.results, evaluation_type="from_conversation", evaluators=self.evaluators
         )
 
 

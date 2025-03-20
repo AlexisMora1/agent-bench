@@ -19,3 +19,4 @@ images/
 *.jsonl.gz
 test_results/
 *.ipynb
+.cursor/

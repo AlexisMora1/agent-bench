@@ -3,6 +3,7 @@ from langchain_aws import (
     ChatBedrock,
     ChatBedrockConverse,
 )
+from cycler import cycler
 from collections import defaultdict
 import math
 import numpy as np
@@ -148,5 +149,106 @@ def measure_system_resources():
     return {
         "memory_usage_mb": process.memory_info().rss / 1024 / 1024,  # Convertir a MB
         "cpu_percent": process.cpu_percent(interval=0.1),  # Segunda llamada con intervalo
-        "num_threads": process.num_threads()
     }
+
+
+def plot_paired_data(metric_name: str, data: List[List], configuration_names: List[str]=[])-> str:
+    _, ax = plt.subplots()
+    n = len(data[0])
+    m = len(data)
+
+    x_positions = np.linspace(1, m, m)  
+
+    if not configuration_names:
+        configuration_names = [f'Config {i}' for i in range(len(data))]
+
+    custom_cycler = (cycler(color=['c', 'm', 'y', 'k']))
+    ax.set_prop_cycle(custom_cycler)
+
+    for i, (x, y, config_name) in enumerate(zip(x_positions, data, configuration_names)):
+        ax.scatter([x] * n, y, label=config_name)
+        
+
+    for i in range(n):  
+        ax.plot(x_positions, [data[j][i] for j in range(m)], color='gray', linestyle='--', linewidth=0.7)
+
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(configuration_names)
+    ax.set_ylabel("value")
+    ax.set_title(f"{metric_name} by configuration")
+    ax.legend()
+
+    filename = f"./images/{metric_name}_paired.png"
+    plt.savefig(filename)
+    plt.close()
+
+    return filename
+
+
+def plot_violin(metric_name: str, data: List[List], configuration_names: List[str] = []) -> str:
+    _, ax = plt.subplots()
+    n = len(data[0])
+    m = len(data)
+    
+    if not configuration_names:
+        configuration_names = [f'Config {i}' for i in range(len(data))]
+
+    custom_cycler = (cycler(color=['c', 'm', 'y', 'k']))
+    ax.set_prop_cycle(custom_cycler)
+
+    x_positions = np.linspace(1, m, m) 
+
+    for x, element, config_name in zip(x_positions, data, configuration_names):
+        ax.violinplot(element, positions=[x], side="high", showmeans=True)
+
+    for i, (x, y, config_name) in enumerate(zip(x_positions, data, configuration_names)):
+        ax.scatter([x - 0.2] * n, y, label=config_name)
+
+    # Etiquetas y título
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(configuration_names)
+    ax.set_ylabel("value")
+    ax.set_title(f"{metric_name} by configuration")
+    ax.legend(loc='upper left', ncols=m)
+
+    # Mostrar gráfico
+    filename = f"./images/{metric_name}_violin_.png"
+    plt.savefig(filename)
+    plt.close()
+
+    return filename
+
+
+def plot_bar_data(metric_name: str, data: List, configuration_names: List[str] = []) -> str:
+    width = 0.25
+    
+    m = len(data)
+    _, ax = plt.subplots(layout='constrained')
+
+    if not configuration_names:
+        configuration_names = [f'Config {i}' for i in range(len(data))]
+
+    custom_cycler = (cycler(color=['c', 'm', 'y', 'k']))
+    plt.rc('axes', prop_cycle=custom_cycler)
+    
+    x_positions = np.linspace(1, m, m) 
+
+
+    for x, element, config_name in zip(x_positions, data, configuration_names):
+
+        rects = ax.bar(x , element, width, label=config_name)
+        ax.bar_label(rects, padding=2)
+
+
+    # Add some text for labels, title and custom x-axis tick labels, etc.
+    ax.set_ylabel('Length (mm)')
+    ax.set_title(f'{metric_name} by configuration')
+    ax.set_xticks(x_positions, configuration_names)
+    ax.legend(loc='upper left', ncols=3)
+    # ax.set_ylim(0, 250)
+
+    filename = f"./images/{metric_name}_bar_.png"
+    plt.savefig(filename)
+    plt.close()
+
+    return filename

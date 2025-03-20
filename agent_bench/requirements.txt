@@ -8,3 +8,4 @@ sentence_transformers==3.4.1
 setuptools==75.8.2
 tqdm==4.67.1
 json-tricks==3.17.3
+polars==1.24.0

@@ -13,7 +13,8 @@ setup(
         "setuptools==75.8.2",
         "tqdm==4.67.1",
         "json-tricks==3.17.3",
-        'langgraph==0.2.75'
+        'langgraph==0.2.75',
+        'polars==1.24.0'
     ],
     extras_require={
         'prebuilt': [
@@ -28,6 +29,7 @@ setup(
             'sentence_transformers==3.4.1',
             'langchain_aws==0.2.13',
             'langgraph==0.2.75',
+            'polars==1.24.0'
         ]
     },
     python_requires=">=3.7",
