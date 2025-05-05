@@ -3,6 +3,7 @@
 env/
 venv/
 ENV/
+.vsc/
 env.bak/
 venv.bak/
 .ruff_cache/

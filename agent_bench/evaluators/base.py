@@ -78,11 +78,10 @@ class BaseConversationalEvaluator(BaseEvaluator):
 
         Raises:
             NotImplementedError: If not implemented by subclasses.
-        
+
         Returns:
             Dict: Result of the conversation evaluation.
         """
         raise NotImplementedError(
             "The evaluate_conversation() method must be implemented by subclasses."
-        )    
-        
+        )

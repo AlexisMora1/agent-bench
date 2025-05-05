@@ -1,18 +1,15 @@
 from typing import Literal, Callable, Dict, Tuple, Any
 from .base import BaseModelProvider
 from langgraph.graph.graph import CompiledGraph
-from langchain_core.messages import (
-    HumanMessage,
-    AIMessage
-)
+from langchain_core.messages import HumanMessage, AIMessage
 
 
 class AWSProvider(BaseModelProvider):
     @staticmethod
     def get_llm(
-        model_id: str, 
-        chat_model: Literal["ChatBedrock", "ChatBedrockConverse"], 
-        temperature: int = 0
+        model_id: str,
+        chat_model: Literal["ChatBedrock", "ChatBedrockConverse"],
+        temperature: int = 0,
     ) -> Callable:
         """
         Use this function to enable llm model and temperature be configurable.
@@ -38,7 +35,7 @@ class AWSProvider(BaseModelProvider):
                 temperature=temperature,
                 max_tokens=500,
             )
-        
+
     @staticmethod
     def bedrock_agent_handler(graph: CompiledGraph, setup: Dict):
         """
@@ -50,7 +47,7 @@ class AWSProvider(BaseModelProvider):
                         preserving_keys of the state during executions and finally the conversational_agent that as an output should have a list.
 
         Consider that it only works on graphs that implement messages as a List in the state key "messages".
-            
+
         """
         try:
             from langchain_aws import ChatBedrock, ChatBedrockConverse
@@ -69,16 +66,17 @@ class AWSProvider(BaseModelProvider):
 
         for _ in range(max_iterations):
             pre_actualized_state = graph.invoke(working_state)
-            
-            agent_messages.append(HumanMessage(content= pre_actualized_state["messages"][-1].content))
+
+            agent_messages.append(
+                HumanMessage(content=pre_actualized_state["messages"][-1].content)
+            )
 
             agent_response = conversational_agent(agent_messages)
-            pre_actualized_state["messages"].append(HumanMessage(content=agent_response[-1].content))
+            pre_actualized_state["messages"].append(
+                HumanMessage(content=agent_response[-1].content)
+            )
 
             for key in preserving_keys:
                 working_state[key] = pre_actualized_state[key]
 
         return working_state
-            
-
-

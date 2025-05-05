@@ -1,41 +1,30 @@
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph.state import CompiledGraph
 from .evaluators.base import BaseEvaluator
 from .utils import (
-    display_results, 
-    add_page_header, 
-    add_evaluator_descriptions, 
-    measure_system_resources,
+    display_results,
+    add_page_header,
+    add_evaluator_descriptions,
     plot_paired_data,
     plot_bar_data,
-    plot_violin
+    plot_violin,
+    build_graph,
 )
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 import polars as pl
-from typing import (
-    List, 
-    Dict, 
-    Tuple, 
-    Callable, 
-    Any, 
-    Optional,
-    Literal
-)
+from typing import List, Dict, Tuple, Callable, Any, Optional, Literal
 from collections import defaultdict
 import time
 import os
 import json
 import json_tricks
 import csv
-import numpy as np
-import matplotlib.pyplot as plt
-from cycler import cycler
 from tqdm import tqdm
 from rich.console import Console
-from rich.table import Table
 from rich.progress import Progress
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import uuid
+import asyncio
+import copy
 
 console = Console()
 
@@ -52,61 +41,69 @@ class EvaluationDataset:
         - A custom plot, in case they have the **custom_plot** method.
     """
 
-    def __init__(self, experiments_results: Dict, evaluation_type: Literal["from_dataset", "from_conversation"] = "from_dataset", evaluators: List[BaseEvaluator] = None):
-        self.raw_results = experiments_results
+    def __init__(
+        self,
+        experiments_results: Dict,
+        evaluation_type: Literal["from_dataset", "from_conversation"] = "from_dataset",
+        evaluators: List[BaseEvaluator] = None,
+    ):
+        self.raw_results = dict(experiments_results)
         self.evaluators = evaluators
         # Procesar datos solo una vez al inicializar
         self.evaluation_type = evaluation_type
         self.experiments = sorted(set(experiments_results["experiment_id"]))
         self.configs = sorted(set(experiments_results["config"]))
 
-
-    def calculate_metrics(self, evaluators, group_by: Optional[List[str]] = None) -> Tuple[Dict,Dict]:
+    def calculate_metrics(
+        self, evaluators, group_by: Optional[List[str]] = None
+    ) -> Tuple[Dict, Dict]:
         """
         Calculate metrics with flexible grouping.
-        
+
         Args:
             group_by: List of columns to group by. Default ['experiment_id', 'config']
         """
         if group_by is None:
-            group_by = ['experiment_id', 'config']
-            
+            group_by = ["experiment_id", "config"]
+
         calculation_metric = {
             "execution_time": pl.mean,
             "error": pl.sum,
-            "memory_usage_mb": pl.max,
-            "cpu_percent": pl.mean,
         }
-        
+
         if evaluators:
-            calculation_metric.update({
-                evaluator.__class__.__name__: evaluator.aggregation 
-                for evaluator in evaluators
-                if evaluator.aggregation is not None
-            })
+            calculation_metric.update(
+                {
+                    evaluator.__class__.__name__: evaluator.aggregation
+                    for evaluator in evaluators
+                    if evaluator.aggregation is not None
+                }
+            )
 
         # Convert to polars DataFrame
-        df = pl.DataFrame(self.raw_results)
+        df = pl.DataFrame(self.raw_results, strict=False)
 
         grouped_in_list = None
         result_list = {}
 
-        
-        grouped_in_list = (df
-                    .group_by(group_by)
-                    .agg(**{metric: pl.col(metric) for metric, _ in calculation_metric.items()})
-                    .sort(group_by))
-        result_list = {col: grouped_in_list[col].to_list() for col in grouped_in_list.columns}
-        
-        grouped_agg = (df
-                    .group_by(group_by)
-                    .agg(**{metric: agg(metric) for metric, agg in calculation_metric.items()})
-                    .sort(group_by))
-        
-        result_agg = {col: grouped_agg[col].to_list() for col in grouped_agg.columns}
-                
-        return result_agg, result_list
+        grouped_in_list = (
+            df.group_by(group_by)
+            .agg(**{metric: pl.col(metric) for metric, _ in calculation_metric.items()})
+            .sort(group_by)
+        )
+        result_list = {
+            col: grouped_in_list[col].to_list() for col in grouped_in_list.columns
+        }
 
+        grouped_agg = (
+            df.group_by(group_by)
+            .agg(**{metric: agg(metric) for metric, agg in calculation_metric.items()})
+            .sort(group_by)
+        )
+
+        result_agg = {col: grouped_agg[col].to_list() for col in grouped_agg.columns}
+
+        return result_agg, result_list
 
     def plot_metrics(self):
         """
@@ -114,11 +111,10 @@ class EvaluationDataset:
 
         If cuistom_plot() method was provided in the evaluator it is used instead of the default plot.
         """
-        metrics_to_plot = {
-            "default": [],
-            "custom": {}
-        }
-        
+        metrics_to_plot = {"default": [], "custom": {}}
+
+        eval_type = self.evaluation_type
+
         if self.evaluators:
             for evaluator in self.evaluators:
                 if evaluator.default_plot:
@@ -126,29 +122,47 @@ class EvaluationDataset:
                 elif hasattr(evaluator, "custom_plot"):
                     metrics_to_plot["custom"][evaluator.__class__.__name__] = evaluator
 
-        agg_data, list_data = self.calculate_metrics(metrics_to_plot["default"], ["config"])
+        agg_data, list_data = self.calculate_metrics(
+            metrics_to_plot["default"],
+            ["config"] if eval_type == "from_dataset" else ["config", "setup"],
+        )
 
+        # print(agg_data)
         resulting_files = []
 
         configuration_names = list_data.pop("config")
+        if self.evaluation_type == "from_conversation":
+            agg_data.pop("setup")
+            list_data.pop("setup")
 
-        resulting_files.extend([plot_violin(metric_name, data, configuration_names) for metric_name, data in list_data.items()])
+        resulting_files.extend(
+            [
+                plot_violin(metric_name, data, configuration_names)
+                for metric_name, data in list_data.items()
+            ]
+        )
 
         if self.evaluation_type == "from_dataset":
-            resulting_files.extend([plot_paired_data(metric_name, data, configuration_names) for metric_name, data in list_data.items()])
+            resulting_files.extend(
+                [
+                    plot_paired_data(metric_name, data, configuration_names)
+                    for metric_name, data in list_data.items()
+                ]
+            )
 
         configuration_names = agg_data.pop("config")
-        resulting_files.extend([plot_bar_data(metric_name, data, configuration_names) for metric_name, data in agg_data.items()])
-
+        resulting_files.extend(
+            [
+                plot_bar_data(metric_name, data, configuration_names)
+                for metric_name, data in agg_data.items()
+            ]
+        )
 
         # Manejar plots personalizados
         for metric, evaluator in metrics_to_plot["custom"].items():
-            resulting_files.extend(
-                evaluator.custom_plot(self.raw_results, metric)
-            )
+            resulting_files.extend(evaluator.custom_plot(self.raw_results, metric))
 
         return resulting_files
-
 
     def generate_report(self):
         """
@@ -178,9 +192,9 @@ class EvaluationDataset:
                 f"Total Configurations: {len(self.configs)}",
                 f"Total Experiments: {len(self.experiments)}",
                 f"Evaluators Used: {len(self.evaluators) if self.evaluators else 0}",
-                "Default Metrics: execution_time, error, memory_usage, cpu_percent"
+                "Default Metrics: execution_time, error, memory_usage, cpu_percent",
             ]
-            
+
             for text in summary_text:
                 c.drawString(70, y_pos, f"• {text}")
                 y_pos -= 15
@@ -219,21 +233,21 @@ class EvaluationDataset:
                     c.setFont("Helvetica-Bold", 12)
                     # c.drawString(100, height - 50, f"Evaluación: {evaluator_name} (cont.)")
                     img_idx = 0
-  # Nueva página para los evaluadores
+        # Nueva página para los evaluadores
 
         c.setFont("Helvetica", 10)
-        y_pos -= 650 
-        c.drawString(50, y_pos, "This report was automatically generated by Agent-Bench.")
+        y_pos -= 650
+        c.drawString(
+            50, y_pos, "This report was automatically generated by Agent-Bench."
+        )
         y_pos -= 20
         c.drawString(50, y_pos, f"Total evaluation time: {time.strftime('%H:%M:%S')}")
         c.showPage()
-        
+
         progress.update(task, advance=1)
-            
 
         c.save()
         console.print("[bold green]Report created successfully![/bold green] ✅🎉\n")
-
 
     def save_experiment_as(self, filename: str, encoding: str = "utf-8"):
         """
@@ -253,9 +267,7 @@ class EvaluationDataset:
 
         if file_ext == "json":
             with open(filename, "w", encoding=encoding) as f:
-                json_tricks.dump(
-                    self.raw_results, f, ensure_ascii=False, indent=4
-                )
+                json_tricks.dump(self.raw_results, f, ensure_ascii=False, indent=4)
 
         elif file_ext == "csv":
             keys = self.raw_results[
@@ -281,8 +293,8 @@ class GraphEvaluator:
 
     def __init__(
         self,
-        configurations: Dict[str, Dict],
-        start_node: str,
+        agents: List[Any],
+        agents_names:List[str],
         evaluators: List[BaseEvaluator],
         results_file: str = None,
     ):
@@ -294,8 +306,8 @@ class GraphEvaluator:
             start_node (str): The starting node of the graph.
             evaluators (List[BaseEvaluator]): A list of evaluators to be used for evaluation.
         """
-        self.configurations = configurations
-        self.start_node = start_node
+        self.agents = agents
+        self.agents_names = agents_names
         self.results = defaultdict(list)
         self.evaluators = evaluators
         self.results_file = results_file
@@ -307,223 +319,288 @@ class GraphEvaluator:
             self.load_results(results_file)
 
         console.print(
-            f"[bold green] GraphEvaluator initialized[/bold green] with {len(configurations)} configurations."
+            "[bold green] GraphEvaluator initialized[/bold green] configurations."
+        )
+
+    @classmethod
+    def from_agent(
+        cls,
+        agents: List[CompiledGraph],
+        agents_names: List[str],
+        evaluators: List[BaseEvaluator],
+        results_file: str = None,
+    ):
+        """
+        # Description
+
+        Use this method when you are using a compiled agent to measure model performance.
+
+        ## Args:
+            - agents (List[CompiledStateGraph]): A list of the compiled agents you are going to evaluate.
+            - evaluators (List[BaseEvaluator]): List of the evaluators designed for your experiment.
+            - results_file (str): Path of the file with previous results or in wich you decided to save the results of the evaluation. Defaults to None.
+        """
+        return cls(
+            agents=agents,
+            agents_names=agents_names,
+            evaluators=evaluators,
+            results_file=results_file,
+        )
+
+    @classmethod
+    def from_config(
+        cls,
+        configurations: Dict[str, Dict],
+        graph_state_class: Dict,
+        start_node: str,
+        evaluators: List[BaseEvaluator],
+        results_file: str = None,
+    ):
+        """
+        # Description
+
+        Use this method if you are trying to evaluate a set of agents from a configurations dict. Inside the configurations dict it is important to include:
+
+        1. A "nodes" key with a List[Callable] representing the nodes you are considering in the agents.
+        2. An "edges" key with a List[Tuple] representing the connections between your nodes.
+        3. "eval_config" key, with the configuration that your nodes will receive as kwargs.
+
+        This method is the most flexible, because you allow a set of nodes and edges to dynamically construct all the configurations you want.
+
+        ## Args:
+            - configurations (Dict[str, Dict]) The configurations dict described below
+            - graph_state_class (Dict): Dict representing the state of your graph.
+            - start_node (str): Name of the first node you are considering to constuct your graph.
+            - evaluators (List[BaseEvaluator]): List of the evaluators designed for your experiment.
+            - results_file (str): Path of the file with previous results or in wich you decided to save the results of the evaluation. Defaults to None.
+        """
+        agents = [
+            build_graph(
+                start_node,
+                config["nodes"],
+                config["edges"],
+                graph_state_class,
+                config.get("eval_config", {}),
+            )
+            for config in configurations.values()
+        ]
+
+        agents_names = [
+            config_names for config_names in configurations.keys()
+        ]
+
+        return cls(
+            agents=agents,
+            agents_names=agents_names,
+            evaluators=evaluators,
+            results_file=results_file,
         )
 
 
-    def build_graph(
-        self,
-        nodes: List[Callable],
-        edges: List[Tuple],
-        graph_state: Dict,
-        eval_config: Dict,
-    ):
-        """
-        Dynamically builds the graph with nodes and connections.
-
-        Args:
-            nodes (List[Callable]): A list of node functions.
-            edges (List[Tuple]): A list of edges connecting the nodes.
-            graph_state (Dict): The initial state of the graph.
-            eval_config (Dict): Configuration for the evaluation.
-
-        Returns:
-            StateGraph: The compiled state graph.
-        """
-        chat_agent = StateGraph(graph_state)
-
-        with Progress() as progress:
-            task = progress.add_task(
-                "[cyan]🔧 Building graph...", total=len(nodes) + len(edges)
-            )
-
-            def create_graph_component(config, eval_config):
-                def component_function(state):
-                    return (
-                        config["function"](state, **eval_config)
-                        if eval_config
-                        else config["function"](state)
-                    )
-
-                return component_function
-
-            for node in nodes:
-                node_name = node.__name__
-                config = {"function": node}
-                chat_agent.add_node(
-                    node_name,
-                    create_graph_component(config, eval_config.get(node_name, {})),
-                )
-                progress.update(task, advance=1)
-
-            chat_agent.add_edge(START, self.start_node)
-            for edge in edges:
-                if isinstance(edge, tuple) and len(edge) == 2:
-                    if edge[1] == "END":
-                        chat_agent.add_edge(edge[0], END)
-                        progress.update(task, advance=1)
-                        continue
-                    if isinstance(edge[1], str):
-                        target = edge[1]
-                        chat_agent.add_edge(edge[0], target)
-                    else:
-                        target = create_graph_component(
-                            {"function": edge[1]}, eval_config.get(edge[1].__name__, {})
-                        )
-                        chat_agent.add_conditional_edges(edge[0], target)
-
-                elif isinstance(edge, tuple) and len(edge) == 3:
-                    target = (
-                        edge[1]
-                        if isinstance(edge[1], str)
-                        else create_graph_component(
-                            {"function": edge[1]}, eval_config.get(edge[1].__name__, {})
-                        )
-                    )
-                    chat_agent.add_conditional_edges(edge[0], target, edge[2])
-                progress.update(task, advance=1)
-
-        return chat_agent.compile()
-
-
-    def evaluate(
+    def evaluate_from_dataset(
         self,
         dataset: List[Dict],
-        graph_state_class,
-        batch_size: int = None,
+        batch_size: int = 10,
         default_values: Dict = {},
+        keep_keys: bool = False,
         experiment_name: str = None,
     ):
         """
         Evaluates the graph with a dataset and evaluators.
 
-        Args:
-            dataset (List[Dict]): The dataset to be used for evaluation.
-            graph_state_class: The class representing the state of the graph.
-            generate_report (bool): Whether to generate a report after evaluation. Defaults to True.
-            batch_size (int): The size of batches for evaluation. Defaults to None. If None evaluates example by example, in other case it will parallelize evaluations.
-            default_values (Dict): Default values to be used in case of errors. Defaults to {}.
+        ## Args:
+            - dataset (List[Dict]): The dataset to be used for evaluation.
+            - graph_state_class: The class representing the state of the graph.
+            - generate_report (bool): Whether to generate a report after evaluation. Defaults to True.
+            - batch_size (int): The size of batches for evaluation. Defaults to 10.
+            - default_values (Dict): Default values to be used in case of errors. Defaults to {}.
 
-        Returns:
-            EvaluationDataset: An object containing the results of the evaluation. It can also save the results in json or generate a pdf report.
+        ## Returns:
+            - EvaluationDataset: An object containing the results of the evaluation. It can also save the results in json or generate a pdf report.
         """
-        if experiment_name is None:
-            experiment_name = str(uuid.uuid4())
 
-        console.print(
-            f"\n[bold cyan] Evaluating {len(self.configurations)} configurations[/bold cyan] on dataset of size {len(dataset)}\n"
+        experiment_name = (
+            str(uuid.uuid4()) if experiment_name is None else experiment_name
         )
 
-        total_evaluation = len(dataset) * len(self.configurations)
+        console.print(
+            f"[bold cyan] Evaluating {len(self.agents)} configurations[/bold cyan] with {len(dataset)} examples!"
+        )
+
+        total_evaluation = len(dataset) * len(self.agents)
 
         with tqdm(
             total=total_evaluation, desc="🔍 Evaluating dataset", unit="example"
         ) as pbar:
             results = defaultdict(list)
-            for config_name, config in self.configurations.items():
-                nodes = config["nodes"]
-                edges = config["edges"]
-                eval_config = config.get("eval_config", {})
-                self.graph = self.build_graph(
-                    nodes, edges, graph_state_class, eval_config
+            for idx, agent in enumerate(self.agents):
+
+                agent_results = asyncio.run(
+                    self._evaluate_dataset_examples(
+                        dataset,
+                        agent,
+                        idx,
+                        batch_size,
+                        pbar,
+                        default_values,
+                        keep_keys,
+                        experiment_name,
+                    )
                 )
 
-                if batch_size:
-                    with ThreadPoolExecutor() as executor:
-                        futures = []
-                        for i in range(0, len(dataset), batch_size):
-                            batch = dataset[i : i + batch_size]
-                            futures.extend(
-                                executor.submit(
-                                    self.process_example,
-                                    example,
-                                    config_name,
-                                    default_values,
-                                    experiment_name,
-                                )
-                                for example in batch
-                            )
+                for key, value in agent_results.items():
+                    results[key].extend(value)
 
-                        console.print(
-                                f"\n[bold cyan] Evaluating {len(futures)} batch examples [/bold cyan] on configuration [bold cyan] {config_name} [/bold cyan]\n"
-                            )
-
-                        for future in as_completed(futures):
-                            result = future.result()
-                            for key, value in result.items():
-                                results[key].append(value)
-                            pbar.update(1)
-
-                else:
-                    i = 0
-                    for example in dataset:
-                        console.print(
-                            f"\n[bold cyan] Evaluating example {i} [/bold cyan] on configuration [bold cyan] {config_name} [/bold cyan]\n"
-                        )
-                        result = self.process_example(
-                            example, config_name, default_values, experiment_name
-                        )
-                        for key, value in result.items():
-                            results[key].append(value)
-                        pbar.update(1)
-                        i += 1
-
-            for key, value in results.items():
-                self.results[key].extend(value)
+            self.results = results
 
         self._display_results()
 
         return EvaluationDataset(
-            experiments_results=self.results, evaluation_type="from_dataset", evaluators=self.evaluators
+            experiments_results=self.results,
+            evaluation_type="from_dataset",
+            evaluators=self.evaluators,
         )
 
 
-    def evaluate_with_conversational_config(self, experiment_name: str, graph_state_class, agent_handler: Callable, agent_setup: List[Dict], attempt_numbers: int = 4, batch_size: int = None):
+    async def _evaluate_dataset_examples(
+        self,
+        inputs: List[Dict],
+        agent: CompiledGraph,
+        idx: int,
+        batch_size: int,
+        pbar: tqdm,
+        default_values: Dict = {},
+        keep_keys: bool = False,
+        experiment_name: str = None,
+    ):
+        """
+        Process asynchronously the dataset examples by batch size.
+        """
+        results = defaultdict(list)
+
+        for i in range(0, len(inputs), batch_size):
+            input_batch = inputs[i : i + batch_size]
+            async with asyncio.TaskGroup() as tg:
+                tasks = [
+                    tg.create_task(
+                        self._process_example(
+                            input, agent, idx, default_values, keep_keys, experiment_name
+                        )
+                    )
+                    for input in input_batch
+                ]
+
+            for completed_task in tasks:
+                result = completed_task.result()
+                for key, value in result.items():
+                    results[key].append(value)
+                pbar.update(1)
+
+        return results
+
+
+    async def _process_example(
+        self,
+        example: Dict,
+        agent: CompiledGraph,
+        idx: int,
+        default_values: Dict = {},
+        keep_keys: bool = False,
+        experiment_name: str = None,
+    ):
+        """
+        Processes a single example from the dataset.
+
+        Args:
+            example (Dict): The example to be processed.
+            config_name (str): The name of the configuration being used.
+            default_values (Dict): Default values to be used in case of errors. Defaults to {}.
+
+        Returns:
+            Dict: The results of processing the example.
+        """
+        eval_results = {}
+        input_data = example.get("input")
+        output_data = example.get("output")
+        start_time = time.time()
+        try:
+            model_output = await agent.ainvoke(copy.deepcopy(input_data))
+            error = 0
+        except Exception as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")  # Usando __str__()
+            error = 1
+            model_output = default_values
+        end_time = time.time()
+
+        if not keep_keys:
+            model_output = {
+                k: model_output.get(k, None) for k in self.relevant_output_keys
+            }
+
+        example_results = {
+            "config": self.agents_names[idx],
+            "dataset_input": input_data,
+            "model_output": model_output,
+            "dataset_output": output_data,
+            "execution_time": end_time - start_time,
+            "error": error,
+            **(
+                {"experiment_id": experiment_name}
+                if experiment_name is not None
+                else {}
+            ),
+        }
+
+        for eval in self.evaluators:
+            eval_results[eval.__class__.__name__] = eval.evaluate(
+                model_output, output_data
+            )
+
+        return example_results | eval_results
+
+
+    def evaluate_with_conversational_config(
+        self,
+        experiment_name: str,
+        agent_handler: Callable,
+        agent_setup: List[Dict],
+        conversation_size: int = 6,
+        repeat_configuration: int = 2,
+    ):
         """Use this method to evaluate architectures iteratively (conversationally).
 
-        It will only works if the evaluators are of type BaseConversationalEvaluator and have the evaluate_conversation method implemented."""
+        It will only works if the evaluators are of type BaseConversationalEvaluator and have the evaluate_conversation method implemented.
+        """
 
-        if experiment_name is None:
-            experiment_name = str(uuid.uuid4())
-
-        console.print(
-            f"\n[bold cyan] Evaluating {len(self.configurations)} configurations[/bold cyan]\n"
+        experiment_name = (
+            str(uuid.uuid4()) if experiment_name is None else experiment_name
         )
 
-        total_evaluation = len(agent_setup)*len(self.configurations)
+        console.print(
+            f"[bold cyan] Evaluating {len(self.agents)} configurations[/bold cyan] with {len(agent_setup)} agent setups!"
+        )
+
+        total_evaluation = len(agent_setup) * len(self.agents) * repeat_configuration
 
         with tqdm(
-            total=total_evaluation, desc="🔍 Evaluating with conversational agent", unit="setup"
+            total=total_evaluation, desc="🔍 Evaluating dataset", unit="example"
         ) as pbar:
             results = defaultdict(list)
-            for config_name, config in self.configurations.items():
-                nodes = config["nodes"]
-                edges = config["edges"]
-                eval_config = config.get("eval_config", {})
-                self.graph = self.build_graph(nodes, edges, graph_state_class, eval_config)
+            for agent in self.agents:
+                agent_results = asyncio.run(
+                    self._evaluate_setup(
+                        agent,
+                        agent_setup,
+                        agent_handler,
+                        conversation_size,
+                        repeat_configuration,
+                        experiment_name,
+                        pbar
+                    )
+                )
 
-                if batch_size:
-                    with ThreadPoolExecutor() as executor:
-                        futures = []
-                        for i in range(0, attempt_numbers, batch_size):
-                            batch = agent_setup[i : i + batch_size]
-                            futures.extend(
-                                executor.submit(self.process_setup, setup, agent_handler, config_name, experiment_name) for setup in batch
-                            )
-
-                        for future in as_completed(futures):
-                            batch_results = future.result()
-                            for key, value in batch_results.items():
-                                # print(results)
-                                results[key].append(value)
-                            pbar.update(1)
-
-                else:
-                    for setup in agent_setup:
-                        setup_results = self.process_setup(setup, agent_handler, config_name, experiment_name)
-                        for key, value in setup_results.items():
-                            results[key].append(value)
-                        pbar.update(1)
+                for key, value in agent_results.items():
+                    results[key].extend(value)
 
             for key, value in results.items():
                 self.results[key].extend(value)
@@ -531,11 +608,83 @@ class GraphEvaluator:
         self._display_results()
 
         return EvaluationDataset(
-            experiments_results=self.results, evaluation_type="from_conversation", evaluators=self.evaluators
+            experiments_results=self.results,
+            evaluation_type="from_conversation",
+            evaluators=self.evaluators,
         )
 
 
-    def load_results(self, filename: str):
+    async def _evaluate_setup(
+        self,
+        agent: CompiledGraph,
+        agent_setup: List[Dict],
+        agent_handler: Callable,
+        conversation_size: int,
+        repeat_configuration: int,
+        experiment_name: str,
+        pbar: tqdm
+    ):
+        results = defaultdict(list)
+        for setup in agent_setup:
+            async with asyncio.TaskGroup() as tg:
+                tasks = [
+                    tg.create_task(
+                        self._process_setup(
+                            setup,
+                            agent_handler,
+                            agent,
+                            conversation_size,
+                            experiment_name,
+                        )
+                    )
+                    for _ in range(repeat_configuration)
+                ]
+
+            for completed_task in tasks:
+                result = completed_task.result()
+                for key, value in result.items():
+                    results[key].append(value)
+                pbar.update(1)
+        
+        return results
+
+
+    async def _process_setup(
+        self,
+        setup: Dict,
+        agent_handler: Callable,
+        agent: CompiledGraph,
+        conversation_size: int,
+        experiment_name: str,
+    ):
+        """Process a single agent setup."""
+        start_time = time.time()
+        try:
+            results = await agent_handler(agent, copy.deepcopy(setup), conversation_size)
+            error = 0
+        except Exception as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")  # Usando __str__()
+            results = {"messages":[]}
+            error = 1
+        end_time = time.time()
+
+        setup_results = {
+            "config": agent.__name__,
+            "setup": setup.get("name", ""),
+            "execution_time": end_time - start_time,
+            "error": error,
+            "experiment_id": experiment_name,
+            "model_output": results,
+        }
+
+        for eval in self.evaluators:
+            eval_results = eval.evaluate(results)
+            setup_results[eval.__class__.__name__] = eval_results
+
+        return setup_results
+
+
+    def _load_results(self, filename: str):
         """
         Loads previous results from a JSON file.
 
@@ -559,88 +708,3 @@ class GraphEvaluator:
         Displays the evaluation results in a table.
         """
         display_results(self.results, console)
-      
-        
-    def process_example(
-        self,
-        example: Dict,
-        config_name: str,
-        default_values: Dict = {},
-        experiment_name: str = None,
-    ):
-        """
-        Processes a single example from the dataset.
-
-        Args:
-            example (Dict): The example to be processed.
-            config_name (str): The name of the configuration being used.
-            default_values (Dict): Default values to be used in case of errors. Defaults to {}.
-
-        Returns:
-            Dict: The results of processing the example.
-        """
-        eval_results = {}
-        input_data = example.get("input")
-        output_data = example.get("output")
-        start_time = time.time()
-        try:
-            model_output = self.graph.invoke(input_data)
-            error = False
-        except Exception as e:
-            console.print(f"[bold red]Error:[/bold red] {e}")
-            error = True
-            model_output = default_values
-        end_time = time.time()
-
-        example_results = {
-            "config": config_name,
-            "dataset_input": input_data,
-            "model_output": {
-                k: model_output.get(k, None) for k in self.relevant_output_keys
-            },
-            "dataset_output": output_data,
-            "execution_time": end_time - start_time,
-            "error": error,
-            **(
-                {"experiment_id": experiment_name}
-                if experiment_name is not None
-                else {}
-            ),
-        }
-
-        for eval in self.evaluators:
-            eval_results[eval.__class__.__name__] = eval.evaluate(
-                model_output, output_data
-            )
-
-        return example_results | eval_results
-
-
-    def process_setup(self, setup: Dict, agent_handler: Callable, config_name: str, experiment_name: str):
-        """Process a single agent setup."""
-        start_time = time.time()
-        start_resources = measure_system_resources()
-        try:
-            results = agent_handler(self.graph, setup)
-            error = False
-        except Exception as e:
-            results = {}
-            error = True
-        end_time = time.time()
-        end_resources = measure_system_resources()
-
-        setup_results = {
-            "config": config_name,
-            "execution_time": end_time - start_time,
-            "error": error,
-            "experiment_id": experiment_name,
-            "memory_usage_mb": end_resources["memory_usage_mb"] - start_resources["memory_usage_mb"],
-            "cpu_percent": end_resources["cpu_percent"] - start_resources["cpu_percent"],
-            "num_threads": end_resources["num_threads"],  # Este es un valor instantáneo
-        }
-
-        for eval in self.evaluators:
-            eval_results = eval.evaluate(results)
-            setup_results[eval.__class__.__name__] = eval_results
-
-        return setup_results

@@ -4,13 +4,15 @@ from typing import Dict, List, Callable, Any
 import numpy as np
 import matplotlib.pyplot as plt
 
+
 def cosine_similarity(vec1, vec2):
     """Calcula la similitud coseno entre dos vectores NumPy."""
     dot_product = np.dot(vec1, vec2)
     norm_vec1 = np.linalg.norm(vec1)
     norm_vec2 = np.linalg.norm(vec2)
-    
+
     return dot_product / (norm_vec1 * norm_vec2)
+
 
 class SimilarityEvaluator(BaseEvaluator):
     """
@@ -26,7 +28,9 @@ class SimilarityEvaluator(BaseEvaluator):
             test (str): The type of test to be used. Defaults to "anova".
         """
         super().__init__(state_key, aggregation, **kwargs)
-        self.model = SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')
+        self.model = SentenceTransformer(
+            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+        )
 
     def evaluate(self, model_output, output_data):
         """
@@ -41,7 +45,9 @@ class SimilarityEvaluator(BaseEvaluator):
         """
         model_output = self.extract_from_state(model_output)
         true_output = self.extract_from_state(output_data)
-        embeddings = self.model.encode([model_output, true_output]) # Obtener los embeddings
+        embeddings = self.model.encode(
+            [model_output, true_output]
+        )  # Obtener los embeddings
 
         return cosine_similarity(embeddings[0], embeddings[1])
 
@@ -53,7 +59,7 @@ class AccuracyEvaluator(BaseEvaluator):
 
     def __init__(self, state_key, test="mcnemar"):
         super().__init__(state_key)
-        self.test=test
+        self.test = test
 
     def evaluate(self, model_output, output_data):
         """
@@ -70,7 +76,7 @@ class AccuracyEvaluator(BaseEvaluator):
         output_data = self.extract_from_state(output_data)
 
         return 1 if model_output == output_data else 0
-    
+
     def custom_plot(self, dataset: Dict, file_prefix: str):
         """
         Generates confusion matrix plots for different configurations.
@@ -86,10 +92,22 @@ class AccuracyEvaluator(BaseEvaluator):
         file_name_list = []
         # Extraer los valores reales y predichos
         for config in configs:
-            y_true = np.array([dataset.get("dataset_output", [])[i].get("model_response") for i in range(len(dataset.get("config"))) if dataset.get("config")[i] == config])
-            y_pred = np.array([dataset.get("model_output", [])[i].get("model_response") for i in range(len(dataset.get("config"))) if dataset.get("config")[i] == config])
+            y_true = np.array(
+                [
+                    dataset.get("dataset_output", [])[i].get("model_response")
+                    for i in range(len(dataset.get("config")))
+                    if dataset.get("config")[i] == config
+                ]
+            )
+            y_pred = np.array(
+                [
+                    dataset.get("model_output", [])[i].get("model_response")
+                    for i in range(len(dataset.get("config")))
+                    if dataset.get("config")[i] == config
+                ]
+            )
 
-            classes = [False, True]  
+            classes = [False, True]
 
             # Crear matriz de confusión vacía
             conf_matrix = np.zeros((2, 2), dtype=int)
@@ -109,7 +127,14 @@ class AccuracyEvaluator(BaseEvaluator):
             # Agregar anotaciones en cada celda
             for i in range(2):
                 for j in range(2):
-                    ax.text(j, i, str(conf_matrix[i, j]), ha="center", va="center", color="black")
+                    ax.text(
+                        j,
+                        i,
+                        str(conf_matrix[i, j]),
+                        ha="center",
+                        va="center",
+                        color="black",
+                    )
 
             # Configurar ejes
             ax.set_xticks(range(2))
@@ -126,6 +151,5 @@ class AccuracyEvaluator(BaseEvaluator):
             plt.savefig(file_name)
             plt.close()
             file_name_list.append(file_name)
-        
+
         return file_name_list
-             
